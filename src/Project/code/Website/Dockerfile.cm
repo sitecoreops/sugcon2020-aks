@@ -1,0 +1,18 @@
+ARG SOLUTION_IMAGE
+ARG BASE_IMAGE
+
+FROM $SOLUTION_IMAGE as solution
+FROM $BASE_IMAGE as runtime
+FROM $BASE_IMAGE as build
+
+ARG CONFIGURATION
+
+COPY --from=solution ["C:/out/Website", "C:/inetpub/wwwroot"]
+COPY --from=runtime ["C:/inetpub/wwwroot/Web.config", "C:/inetpub/wwwroot/Web.config"]
+
+RUN & 'C:\\tools\\scripts\\Invoke-XdtTransform.ps1' -Path 'C:\\inetpub\\wwwroot\\Web.config' -XdtPath ('C:\\inetpub\\wwwroot\\Web.{0}.config' -f $env:CONFIGURATION) -XdtDllPath 'C:\\tools\\bin\\Microsoft.Web.XmlTransform.dll'; \
+    Remove-Item -Path 'C:\\inetpub\\wwwroot\\Web.*.config' -Force;
+
+FROM build as production
+
+COPY --from=solution ["C:/out/serialization", "C:/serialization"]

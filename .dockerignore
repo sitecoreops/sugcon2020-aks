@@ -1,0 +1,17 @@
+.git/
+.vs/
+data/
+images/
+manifests/
+packages/
+templates/
+*.yml
+*.md
+*.user
+.dockerignore
+.env
+.gitignore
+Dockerfile
+src/Project/code/Website/Dockerfile.*
+**/bin/
+**/obj/

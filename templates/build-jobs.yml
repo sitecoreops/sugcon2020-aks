@@ -1,0 +1,100 @@
+parameters:
+- name: project_name
+  type: string
+- name: version_tag
+  type: string
+- name: source_docker_registry
+  type: string
+- name: target_docker_registry
+  type: string
+- name: windows_pool_name
+  type: string
+- name: linux_pool_vmImage
+  type: string
+
+jobs:
+- job: build_images
+  displayName: Build images
+  dependsOn: []
+  strategy:
+    matrix:
+      Windows:
+        POOL_NAME: '${{ parameters.windows_pool_name }}'
+        POOL_VMIMAGE: ''
+        SERVICE_NAMES: 'cm cd'
+        DOCKER_COMPOSE_BUILD_COMMAND: 'docker-compose build solution $(SERVICE_NAMES)'
+        DOCKER_COMPOSE_PUSH_COMMAND: 'docker-compose push $(SERVICE_NAMES)'
+      Linux:
+        POOL_NAME: ''
+        POOL_VMIMAGE: '${{ parameters.linux_pool_vmImage }}'
+        SERVICE_NAMES: 'solr sql'
+        DOCKER_COMPOSE_BUILD_COMMAND: 'docker-compose --file ./docker-compose.linux.yml build $(SERVICE_NAMES)'
+        DOCKER_COMPOSE_PUSH_COMMAND: 'docker-compose --file ./docker-compose.linux.yml push $(SERVICE_NAMES)'
+  pool:
+    name: $(POOL_NAME)
+    vmImage: $(POOL_VMIMAGE)
+  steps:
+  - checkout: self
+
+  - task: Docker@2
+    inputs:
+      containerRegistry: ${{ parameters.source_docker_registry }}
+      command: login
+    displayName: Registry login (source)
+
+  - task: Docker@2
+    inputs:
+      containerRegistry: ${{ parameters.target_docker_registry }}
+      command: login
+    displayName: Registry login (target)
+
+  - script: $(DOCKER_COMPOSE_BUILD_COMMAND)
+    env:
+      PROJECT_NAME: ${{ parameters.project_name }}
+      SITECORE_REGISTRY: '${{ parameters.source_docker_registry }}/'
+      TARGET_REGISTRY: '${{ parameters.target_docker_registry }}/'
+      VERSION: ${{ parameters.version_tag }}
+      CONFIGURATION: Release
+      BUILD_TARGET: production
+    displayName: Build images
+
+  - script: $(DOCKER_COMPOSE_PUSH_COMMAND)
+    env:
+      PROJECT_NAME: ${{ parameters.project_name }}
+      SITECORE_REGISTRY: '${{ parameters.source_docker_registry }}/'
+      TARGET_REGISTRY: '${{ parameters.target_docker_registry }}/'
+      VERSION: ${{ parameters.version_tag }}
+    displayName: Push images
+
+  - pwsh: |
+      New-Item -Path "$(Build.SourcesDirectory)/out" -ItemType Directory | Out-Null
+
+      "$(SERVICE_NAMES)" -split " " | ForEach-Object {
+        $digest = docker inspect --format='{{index .RepoDigests 0}}' ("{0}{1}-{2}:{3}" -f $env:TARGET_REGISTRY, $env:PROJECT_NAME, $_, $env:VERSION)
+        "$_`:`n  image`:`n    tag: $digest" | Out-File -FilePath $(Build.SourcesDirectory)/out/$_`-config.yaml -Force
+      }
+    env:
+      PROJECT_NAME: ${{ parameters.project_name }}
+      TARGET_REGISTRY: '${{ parameters.target_docker_registry }}/'
+      VERSION: ${{ parameters.version_tag }}
+    displayName: Save image digests
+
+  - task: PublishPipelineArtifact@1
+    inputs:
+      artifact: $(System.JobName)
+      path: 'out'
+    displayName: Publish artifacts
+
+- job: build_artifacts
+  displayName: Build artifacts
+  dependsOn: []
+  pool:
+    vmImage: ${{ parameters.linux_pool_vmImage }}
+  steps:
+  - checkout: self
+
+  - task: PublishPipelineArtifact@1
+    inputs:
+      artifact: 'manifests'
+      path: '$(Build.SourcesDirectory)/manifests'
+    displayName: Publish artifacts

@@ -1,0 +1,129 @@
+version: "3.7"
+
+services:
+
+  sql:
+    image: ${TARGET_REGISTRY}${PROJECT_NAME}-sql:${VERSION}
+    build:
+      context: .\images\windows\sql
+      args:
+        BASE_IMAGE: ${SITECORE_REGISTRY}sitecore-xm-sqldev:9.3.0-windowsservercore-ltsc2019
+    volumes:
+      - .\data\sql:C:\Data
+    deploy:
+      resources:
+        limits:
+          memory: 2GB
+    ports:
+      - "44010:1433"
+    environment:
+      SA_PASSWORD: ${SQL_SA_PASSWORD}
+      ACCEPT_EULA: "Y"
+
+  solr:
+    image: ${TARGET_REGISTRY}${PROJECT_NAME}-solr:${VERSION}
+    build:
+      context: .\images\windows\solr
+      args:
+        BASE_IMAGE: ${SITECORE_REGISTRY}sitecore-xm-solr:9.3.0-nanoserver-1809
+    volumes:
+      - .\data\solr:C:\Data
+    deploy:
+      resources:
+        limits:
+          memory: 1GB
+    ports:
+      - "44011:8983"
+    environment:
+      SOLR_LOG_LEVEL: WARN
+      SOLR_HEAP: 512M
+      SOLR_JAVA_MEM: -Xms512M -Xmx512M
+
+  solution:
+    image: ${TARGET_REGISTRY}${PROJECT_NAME}-solution:${VERSION}
+    build:
+      context: .
+      target: ${BUILD_TARGET}
+      args:
+        CONFIGURATION: ${CONFIGURATION}
+    deploy:
+      replicas: 0
+
+  cd:
+    image: ${TARGET_REGISTRY}${PROJECT_NAME}-cd:${VERSION}
+    build:
+      context: .\src\Project\code\Website
+      dockerfile: Dockerfile.cd
+      target: ${BUILD_TARGET}
+      args:
+        CONFIGURATION: ${CONFIGURATION}
+        SOLUTION_IMAGE: ${TARGET_REGISTRY}${PROJECT_NAME}-solution:${VERSION}
+        BASE_IMAGE: ${SITECORE_REGISTRY}sitecore-xm-cd:9.3.0-windowsservercore-ltsc2019
+    entrypoint: powershell.exe -Command "& C:\\tools\\entrypoints\\iis\\Development.ps1 -WatchDirectoryParameters @{ Path = 'C:\\src'; Destination = 'C:\\inetpub\\wwwroot'; ExcludeFiles = @('Web.config'); }"
+    volumes:
+      - ${SITECORE_LICENSE_FOLDER}:C:\license
+      - .\src\Project\code\Website:C:\src
+    deploy:
+      replicas: 0
+    ports:
+      - "44002:80"
+    environment:
+      SITECORE_LICENSE_LOCATION: C:\license\license.xml
+      SITECORE_APPSETTINGS_ROLE:DEFINE: ContentDelivery
+      SITECORE_CONNECTIONSTRINGS_SECURITY: Data Source=sql;Initial Catalog=Sitecore.Core;User ID=sa;Password=${SQL_SA_PASSWORD}
+      SITECORE_CONNECTIONSTRINGS_WEB: Data Source=sql;Initial Catalog=Sitecore.Web;User ID=sa;Password=${SQL_SA_PASSWORD}
+      SITECORE_CONNECTIONSTRINGS_EXPERIENCEFORMS: Data Source=sql;Initial Catalog=Sitecore.ExperienceForms;User ID=sa;Password=${SQL_SA_PASSWORD}
+      SITECORE_CONNECTIONSTRINGS_SOLR.SEARCH: http://solr:8983/solr
+      ENTRYPOINT_STDOUT_IIS_ACCESS_LOG_ENABLED: 'false'
+      ENTRYPOINT_STDOUT_IIS_ERROR_LOG_ENABLED: 'false'
+      ENTRYPOINT_STDOUT_SITECORE_LOG_ENABLED: 'true'
+    depends_on:
+      - solution
+      - sql
+      - solr
+
+  cm:
+    image: ${TARGET_REGISTRY}${PROJECT_NAME}-cm:${VERSION}
+    build:
+      context: .\src\Project\code\Website
+      dockerfile: Dockerfile.cm
+      target: ${BUILD_TARGET}
+      args:
+        CONFIGURATION: ${CONFIGURATION}
+        SOLUTION_IMAGE: ${TARGET_REGISTRY}${PROJECT_NAME}-solution:${VERSION}
+        BASE_IMAGE: ${SITECORE_REGISTRY}sitecore-xm-cm:9.3.0-windowsservercore-ltsc2019
+    entrypoint: powershell.exe -Command "& C:\\tools\\entrypoints\\iis\\Development.ps1 -WatchDirectoryParameters @{ Path = 'C:\\src'; Destination = 'C:\\inetpub\\wwwroot'; ExcludeFiles = @('Web.config'); }"
+    volumes:
+      - ${SITECORE_LICENSE_FOLDER}:C:\license
+      - .\src\Foundation\serialization:C:\serialization\Foundation
+      - .\src\Feature\serialization:C:\serialization\Feature
+      - .\src\Project\serialization:C:\serialization\Project
+      - .\src\Project\code\Website:C:\src
+    ports:
+      - "44001:80"
+    environment:
+      SITECORE_LICENSE_LOCATION: C:\license\license.xml
+      SITECORE_APPSETTINGS_ROLE:DEFINE: ContentManagement, Indexing
+      SITECORE_APPSETTINGS_TELERIK.ASYNCUPLOAD.CONFIGURATIONENCRYPTIONKEY: ${TELERIK_ENCRYPTION_KEY}
+      SITECORE_APPSETTINGS_TELERIK.UPLOAD.CONFIGURATIONHASHKEY: ${TELERIK_ENCRYPTION_KEY}
+      SITECORE_APPSETTINGS_TELERIK.WEB.UI.DIALOGPARAMETERSENCRYPTIONKEY: ${TELERIK_ENCRYPTION_KEY}
+      SITECORE_CONNECTIONSTRINGS_CORE: Data Source=sql;Initial Catalog=Sitecore.Core;User ID=sa;Password=${SQL_SA_PASSWORD}
+      SITECORE_CONNECTIONSTRINGS_SECURITY: Data Source=sql;Initial Catalog=Sitecore.Core;User ID=sa;Password=${SQL_SA_PASSWORD}
+      SITECORE_CONNECTIONSTRINGS_MASTER: Data Source=sql;Initial Catalog=Sitecore.Master;User ID=sa;Password=${SQL_SA_PASSWORD}
+      SITECORE_CONNECTIONSTRINGS_WEB: Data Source=sql;Initial Catalog=Sitecore.Web;User ID=sa;Password=${SQL_SA_PASSWORD}
+      SITECORE_CONNECTIONSTRINGS_EXPERIENCEFORMS: Data Source=sql;Initial Catalog=Sitecore.ExperienceForms;User ID=sa;Password=${SQL_SA_PASSWORD}
+      SITECORE_CONNECTIONSTRINGS_SOLR.SEARCH: http://solr:8983/solr
+      SITECORE_SETTINGS_UNICORN_SHARED_SECRET: ${UNICORN_SHARED_SECRET}
+      SITECORE_ADMIN_PASSWORD: ${SITECORE_ADMIN_PASSWORD}
+      ENTRYPOINT_STDOUT_IIS_ACCESS_LOG_ENABLED: 'false'
+      ENTRYPOINT_STDOUT_IIS_ERROR_LOG_ENABLED: 'false'
+      ENTRYPOINT_STDOUT_SITECORE_LOG_ENABLED: 'true'
+    depends_on:
+      - solution
+      - sql
+      - solr
+
+networks:
+  default:
+    external:
+      name: nat

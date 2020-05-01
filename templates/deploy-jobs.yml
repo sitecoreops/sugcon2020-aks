@@ -1,0 +1,206 @@
+parameters:
+- name: project_name
+  type: string
+- name: environment_name
+  type: string
+- name: namespace
+  type: string
+- name: master_resource_name
+  type: string
+- name: k8s_admin_connection
+  type: string
+- name: dns_tld
+  type: string
+- name: helm_repo_name
+  type: string
+- name: helm_repo_url
+  type: string
+- name: helm_chart_name
+  type: string
+
+jobs:
+- deployment: deploy
+  displayName: Deploy
+  environment: '${{ parameters.environment_name }}.${{ parameters.namespace }}'
+  strategy:
+    runOnce:
+      deploy:
+        steps:
+# dynamic environment resource steps (ReviewApp@0 workarounds)
+        - task: Kubernetes@1
+          inputs:
+            kubernetesServiceEndpoint: ${{ parameters.k8s_admin_connection }}
+            command: apply
+            useConfigurationFile: true
+            inline: '{ "kind": "Namespace", "apiVersion": "v1", "metadata": { "name": "${{ parameters.namespace }}" }}'
+          displayName: 'Deploy namespace'
+
+        - task: Kubernetes@1
+          name: getMasterServiceAccounts
+          inputs:
+            connectionType: Kubernetes Service Connection
+            kubernetesServiceEndpoint: ${{ parameters.k8s_admin_connection }}
+            command: get
+            arguments: serviceaccount
+            namespace: ${{ parameters.master_resource_name }}
+            outputFormat: jsonpath="{.items.*.metadata.name}"
+          displayName: Get master service accounts
+
+        - pwsh: |
+            $output = $(getMasterServiceAccounts.KubectlOutput)
+            $account = $output.Trim().Replace(",", "") -split " " | Where-Object { $_ -like "azdev-sa-*" } | Select-Object -First 1
+
+            if([string]::IsNullOrEmpty($account))
+            {
+              throw "Could not find service account in '$output'."
+            }
+
+            Write-Host "Found master service account: $account."
+            Write-Host "##vso[task.setvariable variable=master_resource_k8s_service_account]$account"
+          displayName: Set master service account
+
+        - task: ReviewApp@0
+          inputs:
+            resourceName: ${{ parameters.master_resource_name }}
+          displayName: Deploy dynamic environment resource
+
+        - task: Kubernetes@1
+          inputs:
+            kubernetesServiceEndpoint: ${{ parameters.k8s_admin_connection }}
+            command: apply
+            useConfigurationFile: true
+            inline: '{ "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": { "name": "${{ parameters.namespace }}-view", "namespace": "${{ parameters.namespace }}" }, "roleRef": { "apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "view" }, "subjects": [ { "kind": "ServiceAccount", "name": "$(master_resource_k8s_service_account)", "namespace": "${{ parameters.master_resource_name }}" } ] }'
+          displayName: Deploy rolebinding for dynamic environment resource
+# /dynamic environment resource steps (ReviewApp@0 workarounds)
+
+        - task: DownloadSecureFile@1
+          name: getLicense
+          inputs:
+            secureFile: license.xml
+          displayName: Download license.xml
+
+        - task: Kubernetes@1
+          inputs:
+            connectionType: Kubernetes Service Connection
+            kubernetesServiceEndpoint: ${{ parameters.k8s_admin_connection }}
+            namespace: ${{ parameters.namespace }}
+            secretType: generic
+            secretArguments: --from-file $(getLicense.secureFilePath)
+            secretName: license.xml
+          displayName: Deploy file secrets
+
+        - task: Kubernetes@1
+          inputs:
+            connectionType: Kubernetes Service Connection
+            kubernetesServiceEndpoint: ${{ parameters.k8s_admin_connection }}
+            command: apply
+            namespace: ${{ parameters.namespace }}
+            arguments: -f "$(Pipeline.Workspace)/manifests/letsencrypt-issuer.yaml"
+          displayName: Deploy issuer
+
+        - task: HelmDeploy@0
+          inputs:
+            connectionType: Kubernetes Service Connection
+            kubernetesServiceEndpoint: ${{ parameters.k8s_admin_connection }}
+            namespace: ${{ parameters.namespace }}
+            command: repo
+            arguments: add ${{ parameters.helm_repo_name }} ${{ parameters.helm_repo_url }}
+          displayName: Add Helm repository
+
+        - task: HelmDeploy@0
+          inputs:
+            connectionType: Kubernetes Service Connection
+            kubernetesServiceEndpoint: ${{ parameters.k8s_admin_connection }}
+            namespace: ${{ parameters.namespace }}
+            command: repo
+            arguments: >-
+              update
+          displayName: Update Helm repository
+
+        - task: HelmDeploy@0
+          inputs:
+            connectionType: Kubernetes Service Connection
+            kubernetesServiceEndpoint: ${{ parameters.k8s_admin_connection }}
+            namespace: ${{ parameters.namespace }}
+            command: upgrade
+            chartType: Name
+            chartName: ${{ parameters.helm_chart_name }}
+            releaseName: ${{ parameters.project_name }}
+            install: true
+            waitForExecution: true
+            arguments: >-
+              --timeout 30m0s
+              --values $(Pipeline.Workspace)/windows/cd-config.yaml
+              --values $(Pipeline.Workspace)/windows/cm-config.yaml
+              --values $(Pipeline.Workspace)/linux/sql-config.yaml
+              --values $(Pipeline.Workspace)/linux/solr-config.yaml
+              --set global.sqlSaPassword="$(SQL_SA_PASSWORD)"
+              --set global.telerikEncryptionKey="$(TELERIK_ENCRYPTION_KEY)"
+              --set cm.tolerations[0].key="os"
+              --set cm.tolerations[0].operator="Equal"
+              --set cm.tolerations[0].value="windows"
+              --set cm.tolerations[0].effect="NoSchedule"
+              --set cm.adminPassword="$(SITECORE_ADMIN_PASSWORD)"
+              --set cm.unicornSharedSecret="$(UNICORN_SHARED_SECRET)"
+              --set cm.ingress.enabled=true
+              --set cm.ingress.annotations."kubernetes\.io/ingress\.class"="nginx"
+              --set cm.ingress.annotations."nginx\.ingress\.kubernetes\.io/proxy-connect-timeout"="60s"
+              --set cm.ingress.annotations."nginx\.ingress\.kubernetes\.io/proxy-send-timeout"="60s"
+              --set cm.ingress.annotations."nginx\.ingress\.kubernetes\.io/proxy-read-timeout"="60s"
+              --set cm.ingress.annotations."cert-manager\.io/issuer"="letsencrypt-prod"
+              --set cm.ingress.tls[0].hosts[0]="cm-${{ parameters.namespace }}.${{ parameters.dns_tld }}"
+              --set cm.ingress.tls[0].secretName="letsencrypt-tls-cm"
+              --set cm.ingress.hosts[0].host="cm-${{ parameters.namespace }}.${{ parameters.dns_tld }}"
+              --set cm.ingress.hosts[0].paths[0]="/"
+              --set cd.tolerations[0].key="os"
+              --set cd.tolerations[0].operator="Equal"
+              --set cd.tolerations[0].value="windows"
+              --set cd.tolerations[0].effect="NoSchedule"
+              --set cd.ingress.enabled=true
+              --set cd.ingress.annotations."kubernetes\.io/ingress\.class"="nginx"
+              --set cd.ingress.annotations."nginx\.ingress\.kubernetes\.io/affinity"="cookie"
+              --set cd.ingress.annotations."cert-manager\.io/issuer"="letsencrypt-prod"
+              --set cd.ingress.tls[0].hosts[0]="cd-${{ parameters.namespace }}.${{ parameters.dns_tld }}"
+              --set cd.ingress.tls[0].secretName="letsencrypt-tls-cd"
+              --set cd.ingress.hosts[0].host="cd-${{ parameters.namespace }}.${{ parameters.dns_tld }}"
+              --set cd.ingress.hosts[0].paths[0]="/"
+          displayName: Deploy chart
+
+        - task: Kubernetes@1
+          inputs:
+            connectionType: Kubernetes Service Connection
+            kubernetesServiceEndpoint: ${{ parameters.k8s_admin_connection }}
+            command: exec
+            namespace: ${{ parameters.namespace }}
+            arguments: deploy/${{ parameters.project_name }}-cm -- powershell C:\inetpub\wwwroot\App_Config\Sync-Unicorn.ps1
+          displayName: Sync Unicorn
+
+- job: notify
+  displayName: Notify
+  dependsOn:
+  - deploy
+  steps:
+  - checkout: none
+
+  - task: Kubernetes@1
+    name: getIngress
+    inputs:
+      connectionType: Kubernetes Service Connection
+      kubernetesServiceEndpoint: ${{ parameters.k8s_admin_connection }}
+      command: get
+      namespace: ${{ parameters.namespace }}
+      arguments: ingress
+      outputFormat: jsonpath="{range .items[*].spec.tls[*]}{.hosts[*]} {end}"
+    displayName: Get ingres tls hosts
+
+  - pwsh: |
+      $ingressHosts = $(getIngress.KubectlOutput).Trim() -split " "
+      $message = "`nYou solution has now been deployed!`n`n"
+      $message += "Ingress has the following tls hostnames exposed:`n`n"
+
+      $ingressHosts | ForEach-Object {
+        $message += "- https://$_`n"
+      }
+
+      Write-Host $message
+    displayName: Write message

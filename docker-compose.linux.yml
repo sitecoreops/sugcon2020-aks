@@ -1,0 +1,17 @@
+version: "3.7"
+
+services:
+
+  sql:
+    image: ${TARGET_REGISTRY}${PROJECT_NAME}-sql:${VERSION}
+    build:
+      context: ./images/linux/sql
+      args:
+        BASE_IMAGE: ${SITECORE_REGISTRY}sitecore-xm-sql:9.3.0-linux
+
+  solr:
+    image: ${TARGET_REGISTRY}${PROJECT_NAME}-solr:${VERSION}
+    build:
+      context: ./images/linux/solr
+      args:
+        BASE_IMAGE: ${SITECORE_REGISTRY}sitecore-xm-solr:9.3.0-linux

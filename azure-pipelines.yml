@@ -1,0 +1,74 @@
+trigger:
+  paths:
+    exclude:
+    - "*.md"
+
+variables:
+- group: general
+- name: project_name
+  value: sitecoredemo
+- name: source_docker_registry
+  value: valtech.azurecr.io
+- name: target_docker_registry
+  value: aksdc1.azurecr.io
+- name: windows_poolname
+  value: sitecore-docker-images
+- name: k8s_admin_service_connection_testing
+  value: aksdc1-admin
+- name: k8s_admin_service_connection_production
+  value: aksdc1-admin
+- name: version_tag
+  value: $(Build.SourceBranchName)
+- name: dns_tld
+  value: aksdc1.devtest.sh
+
+stages:
+- stage: build
+  displayName: Build
+  dependsOn: []
+  jobs:
+  - template: templates/build-jobs.yml
+    parameters:
+      project_name: ${{ variables.project_name }}
+      version_tag: $(version_tag)
+      source_docker_registry: $(source_docker_registry)
+      target_docker_registry: $(target_docker_registry)
+      windows_pool_name: $(windows_poolname)
+      linux_pool_vmImage: ubuntu-latest
+
+- stage: testing
+  displayName: Deploy (testing)
+  dependsOn: build
+  pool:
+    vmImage: ubuntu-latest
+  jobs:
+  - template: templates/deploy-jobs.yml
+    parameters:
+      project_name: ${{ variables.project_name }}
+      k8s_admin_connection: $(k8s_admin_service_connection_testing)
+      environment_name: testing
+      master_resource_name: test-${{ variables.project_name }}-master
+      namespace: test-${{ variables.project_name }}-$(version_tag)
+      dns_tld: $(dns_tld)
+      helm_repo_name: sitecoreops
+      helm_repo_url: https://sitecoreops.github.io/sitecore-helm
+      helm_chart_name: sitecoreops/sitecore930-xm
+
+- stage: production
+  displayName: Deploy (production)
+  dependsOn: testing
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
+  pool:
+    vmImage: ubuntu-latest
+  jobs:
+  - template: templates/deploy-jobs.yml
+    parameters:
+      project_name: ${{ variables.project_name }}
+      k8s_admin_connection: $(k8s_admin_service_connection_production)
+      environment_name: production
+      master_resource_name: prod-${{ variables.project_name }}-master
+      namespace: prod-${{ variables.project_name }}-$(version_tag)
+      dns_tld: $(dns_tld)
+      helm_repo_name: sitecoreops
+      helm_repo_url: https://sitecoreops.github.io/sitecore-helm
+      helm_chart_name: sitecoreops/sitecore930-xm

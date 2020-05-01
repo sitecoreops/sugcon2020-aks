@@ -1,0 +1,10 @@
+packages/
+.vs/
+bin/
+obj/
+*.user
+*.ncrunch*
+out/
+data/**/*
+!data/*/
+!data/*/.gitkeep
