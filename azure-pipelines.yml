@@ -8,19 +8,19 @@ variables:
 - name: project_name
   value: sitecoredemo
 - name: source_docker_registry
-  value: valtech.azurecr.io
+  value:
 - name: target_docker_registry
-  value: aksdc1.azurecr.io
+  value:
 - name: windows_poolname
-  value: sitecore-docker-images
+  value:
 - name: k8s_admin_service_connection_testing
-  value: aksdc1-admin
+  value:
 - name: k8s_admin_service_connection_production
-  value: aksdc1-admin
+  value:
 - name: version_tag
   value: $(Build.SourceBranchName)
 - name: dns_tld
-  value: aksdc1.devtest.sh
+  value:
 
 stages:
 - stage: build
